@@ -6,12 +6,17 @@ import threading
 import queue
 import subprocess
 import glob
+import json
 
 app = Flask(__name__)
 
 # Configuration
 DOWNLOAD_DIR = Path("/downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+# Status directory for tracking long-running jobs
+STATUS_DIR = Path("/downloads/.status")
+STATUS_DIR.mkdir(exist_ok=True)
 
 # Download queue to limit concurrent downloads
 download_queue = queue.Queue()
@@ -53,19 +58,51 @@ QUALITY_PRESETS = {
     }
 }
 
-# Store download status
+# Store download status in memory as fallback
 download_status = {}
 download_status_lock = threading.Lock()
-active_downloads = set()  # Track which downloads are currently in progress
-active_downloads_lock = threading.Lock()
-download_counter = 0  # Monotonically increasing counter for unique download IDs
-download_counter_lock = threading.Lock()
 
 
 def safe_update_status(video_id, status_dict):
-    """Thread-safe update of download status"""
+    """Update download status to both file and memory"""
+    # Update memory
     with download_status_lock:
         download_status[video_id] = status_dict.copy()
+    
+    # Update file
+    status_file = STATUS_DIR / f"{video_id}.json"
+    try:
+        with open(status_file, 'w') as f:
+            json.dump(status_dict, f)
+    except Exception as e:
+        print(f"Error writing status file for {video_id}: {e}")
+
+
+def get_status_from_file(video_id):
+    """Read status from file if it exists"""
+    status_file = STATUS_DIR / f"{video_id}.json"
+    if status_file.exists():
+        try:
+            with open(status_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error reading status file for {video_id}: {e}")
+    
+    # Fallback to memory
+    with download_status_lock:
+        return download_status.get(video_id, {'status': 'not_found'})
+
+
+def cleanup_old_status_files(max_age_seconds=86400):
+    """Remove status files older than max_age_seconds (default 24 hours)"""
+    import time
+    current_time = time.time()
+    try:
+        for status_file in STATUS_DIR.glob('*.json'):
+            if current_time - status_file.stat().st_mtime > max_age_seconds:
+                status_file.unlink()
+    except Exception as e:
+        print(f"Error cleaning up status files: {e}")
 
 
 def get_video_info(url):
@@ -155,6 +192,8 @@ def start_download_worker():
     """Start the download worker thread if not already running"""
     global download_worker_thread
     if download_worker_thread is None or not download_worker_thread.is_alive():
+        # Clean up old status files on worker start
+        cleanup_old_status_files()
         download_worker_thread = threading.Thread(target=download_worker, daemon=True)
         download_worker_thread.start()
 
@@ -390,7 +429,7 @@ def download():
 @app.route('/api/download-status/<download_id>', methods=['GET'])
 def get_download_status(download_id):
     """Get status of a download"""
-    status = download_status.get(download_id, {'status': 'not_found'})
+    status = get_status_from_file(download_id)
     if status.get('status') in ['downloading', 'processing']:
         print(f"[STATUS] {download_id}: {status}")
     return jsonify(status)
@@ -421,9 +460,15 @@ def clear_downloads():
         files = list(DOWNLOAD_DIR.glob('*'))
         deleted_count = 0
         for f in files:
-            if f.is_file():
+            if f.is_file() and not f.name.startswith('.'):
                 f.unlink()
                 deleted_count += 1
+        
+        # Also clean up status files
+        status_files = list(STATUS_DIR.glob('*.json'))
+        for f in status_files:
+            f.unlink()
+        
         return jsonify({'success': True, 'deleted': deleted_count})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
