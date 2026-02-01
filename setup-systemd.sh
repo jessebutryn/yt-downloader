@@ -44,20 +44,9 @@ chmod 755 "$log_dir"
 echo ""
 echo "3. Copying app to production location..."
 mkdir -p "$app_dir"
-echo "   Copying files from /home/jesse/git/yt-downloader to $app_dir..."
 cp -r /home/jesse/git/yt-downloader/* "$app_dir/" 2>/dev/null || true
-cp -r /home/jesse/git/yt-downloader/.git* "$app_dir/" 2>/dev/null || true
-
-# Verify setup.py exists
-if [[ ! -f "$app_dir/setup.py" ]]; then
-    echo "   ERROR: setup.py not found in $app_dir"
-    ls -la "$app_dir/"
-    exit 1
-fi
-
 chown -R "$app_user:$app_group" "$app_dir"
 chmod -R 755 "$app_dir"
-echo "   Files copied successfully"
 
 echo ""
 echo "4. Setting up Python virtual environment..."
