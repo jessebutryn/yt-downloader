@@ -7,15 +7,15 @@ Documentation=https://github.com/yourusername/yt-downloader
 Type=notify
 User=yt-dl
 Group=yt-dl
-WorkingDirectory=/home/yt-dl
+WorkingDirectory=/opt/yt-downloader
 
 # Environment variables
 Environment="PATH=/home/yt-dl/venv/bin"
 EnvironmentFile=-/etc/yt-downloader/yt-downloader.env
 
 # Start command - using gunicorn
-ExecStart=/home/yt-dl/venv/bin/gunicorn \
-    --config /home/yt-dl/gunicorn_config.py \
+ExecStart=/opt/yt-downloader/venv/bin/gunicorn \
+    --config /opt/yt-downloader/gunicorn_config.py \
     app:app
 
 # Restart policy

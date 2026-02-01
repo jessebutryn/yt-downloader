@@ -7,7 +7,7 @@ set -e
 echo "=== YouTube Downloader Systemd Setup ==="
 
 # Configuration
-app_user_home="/home/yt-dl"
+app_dir="/opt/yt-downloader"
 app_user="yt-dl"
 app_group="yt-dl"
 download_dir="/downloads"
@@ -42,28 +42,30 @@ chmod 755 "$download_dir"
 chmod 755 "$log_dir"
 
 echo ""
-echo "3. Copying app to yt-dl home directory..."
-echo "   Copying files from current directory to $app_user_home..."
-cp -r ./* "$app_user_home/" 2>/dev/null || true
-cp -r ./.git* "$app_user_home/" 2>/dev/null || true
+echo "3. Copying app to production location..."
+mkdir -p "$app_dir"
+echo "   Copying files from current directory to $app_dir..."
+cp -r ./* "$app_dir/" 2>/dev/null || true
+cp -r ./.git* "$app_dir/" 2>/dev/null || true
 
 # Verify setup.py exists
-if [[ ! -f "$app_user_home/setup.py" ]]; then
-    echo "   ERROR: setup.py not found in $app_user_home"
+if [[ ! -f "$app_dir/setup.py" ]]; then
+    echo "   ERROR: setup.py not found in $app_dir"
     echo "   Current directory: $(pwd)"
     echo "   Files in current directory:"
     ls -la
-    echo "   Files in $app_user_home:"
-    ls -la "$app_user_home/"
+    echo "   Files in $app_dir:"
+    ls -la "$app_dir/"
     exit 1
 fi
 
-chown -R "$app_user:$app_group" "$app_user_home"
-chmod -R 755 "$app_user_home"
+chown -R "$app_user:$app_group" "$app_dir"
+chmod -R 755 "$app_dir"
 echo "   Files copied successfully"
 
 echo ""
 echo "4. Setting up Python virtual environment..."
+app_user_home="/home/yt-dl"
 venv_dir="$app_user_home/venv"
 
 if [[ ! -f "$venv_dir/bin/activate" ]]; then
@@ -74,12 +76,12 @@ fi
 
 echo "   Installing dependencies..."
 sudo -u "$app_user" "$venv_dir/bin/pip" install --upgrade pip
-sudo -u "$app_user" "$venv_dir/bin/pip" install -e "$app_user_home"
+sudo -u "$app_user" "$venv_dir/bin/pip" install -e "$app_dir"
 
 echo ""
 echo "5. Setting up configuration file..."
 if [[ ! -f "$config_dir/yt-downloader.env" ]]; then
-    cp "$app_user_home/yt-downloader.env.example" "$config_dir/yt-downloader.env"
+    cp "$app_dir/yt-downloader.env.example" "$config_dir/yt-downloader.env"
     echo "   Created $config_dir/yt-downloader.env"
     echo "   Please edit it with your configuration"
 else
@@ -88,7 +90,7 @@ fi
 
 echo ""
 echo "6. Installing systemd service..."
-cp "$app_user_home/yt-downloader.service" /etc/systemd/system/
+cp "$app_dir/yt-downloader.service" /etc/systemd/system/
 systemctl daemon-reload
 echo "   Systemd service installed"
 
