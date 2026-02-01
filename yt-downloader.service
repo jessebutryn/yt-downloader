@@ -4,7 +4,7 @@ After=network.target
 Documentation=https://github.com/yourusername/yt-downloader
 
 [Service]
-Type=simple
+Type=notify
 User=yt-dl
 Group=yt-dl
 WorkingDirectory=/home/yt-dl
