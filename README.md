@@ -32,7 +32,9 @@ A Flask-based web application for downloading videos and audio from YouTube, run
    - Select download type (audio-only, video-only, or both)
    - Choose quality preferences
    - Click "Download"
+## Screenshots
 
+![YouTube Downloader UI](screenshot.png)
 ## Usage
 
 ### Downloading
