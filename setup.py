@@ -16,6 +16,5 @@ setup(
     install_requires=[
         "Flask==3.0.0",
         "yt-dlp>=2026.1.31",
-        "gunicorn==21.2.0",    
     ],
 )
