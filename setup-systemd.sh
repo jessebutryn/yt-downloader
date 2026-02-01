@@ -46,16 +46,15 @@ echo "3. Setting up Python virtual environment..."
 app_user_home="/home/yt-dl"
 venv_dir="$app_user_home/venv"
 
-if [[ ! -f "$venv_dir/bin/activate" ]]; then
-    echo "   Creating virtual environment at $venv_dir..."
-    sudo -u "$app_user" python3 -m venv "$venv_dir" || { echo "Failed to create venv"; exit 1; }
+if [[ ! -d "$venv_dir" ]]; then
+    sudo -u "$app_user" python3 -m venv "$venv_dir"
     echo "   Created virtual environment"
 fi
 
 source "$venv_dir/bin/activate"
 echo "   Installing dependencies..."
 pip install --upgrade pip
-sudo -u "$app_user" "$venv_dir/bin/pip" install -e /home/jesse/git/yt-downloader
+pip install -e /home/jesse/git/yt-downloader
 
 echo ""
 echo "4. Copying app to production location..."
