@@ -42,7 +42,14 @@ chmod 755 "$download_dir"
 chmod 755 "$log_dir"
 
 echo ""
-echo "3. Setting up Python virtual environment..."
+echo "3. Copying app to production location..."
+mkdir -p "$app_dir"
+cp -r /home/jesse/git/yt-downloader/* "$app_dir/" 2>/dev/null || true
+chown -R "$app_user:$app_group" "$app_dir"
+chmod -R 755 "$app_dir"
+
+echo ""
+echo "4. Setting up Python virtual environment..."
 app_user_home="/home/yt-dl"
 venv_dir="$app_user_home/venv"
 
@@ -52,22 +59,14 @@ if [[ ! -f "$venv_dir/bin/activate" ]]; then
     echo "   Created virtual environment"
 fi
 
-source "$venv_dir/bin/activate"
 echo "   Installing dependencies..."
-pip install --upgrade pip
-sudo -u "$app_user" "$venv_dir/bin/pip" install -e /home/jesse/git/yt-downloader
-
-echo ""
-echo "4. Copying app to production location..."
-mkdir -p "$app_dir"
-cp -r ./* "$app_dir/" 2>/dev/null || true
-chown -R "$app_user:$app_group" "$app_dir"
-chmod -R 755 "$app_dir"
+sudo -u "$app_user" "$venv_dir/bin/pip" install --upgrade pip
+sudo -u "$app_user" "$venv_dir/bin/pip" install -e "$app_dir"
 
 echo ""
 echo "5. Setting up configuration file..."
 if [[ ! -f "$config_dir/yt-downloader.env" ]]; then
-    cp yt-downloader.env.example "$config_dir/yt-downloader.env"
+    cp "$app_dir/yt-downloader.env.example" "$config_dir/yt-downloader.env"
     echo "   Created $config_dir/yt-downloader.env"
     echo "   Please edit it with your configuration"
 else
@@ -76,7 +75,7 @@ fi
 
 echo ""
 echo "6. Installing systemd service..."
-cp yt-downloader.service /etc/systemd/system/
+cp "$app_dir/yt-downloader.service" /etc/systemd/system/
 systemctl daemon-reload
 echo "   Systemd service installed"
 
