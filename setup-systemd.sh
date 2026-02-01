@@ -24,7 +24,7 @@ echo "1. Creating yt-dl user..."
 if id "$app_user" &>/dev/null; then
     echo "   User $app_user already exists"
 else
-    useradd -r -s /bin/bash -m -d /var/lib/yt-dl "$app_user"
+    useradd -r -s /bin/bash -m -d /home/yt-dl "$app_user"
     echo "   Created user $app_user"
 fi
 
@@ -43,7 +43,7 @@ chmod 755 "$log_dir"
 
 echo ""
 echo "3. Setting up Python virtual environment..."
-app_user_home=$(eval echo "~$app_user")
+app_user_home="/home/yt-dl"
 venv_dir="$app_user_home/venv"
 
 if [[ ! -d "$venv_dir" ]]; then

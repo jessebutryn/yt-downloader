@@ -5,12 +5,12 @@ Documentation=https://github.com/yourusername/yt-downloader
 
 [Service]
 Type=notify
-User=yt-downloader
-Group=yt-downloader
+User=yt-dl
+Group=yt-dl
 WorkingDirectory=/opt/yt-downloader
 
 # Environment variables
-Environment="PATH=/opt/yt-downloader/venv/bin"
+Environment="PATH=/home/yt-dl/venv/bin"
 EnvironmentFile=-/etc/yt-downloader/yt-downloader.env
 
 # Start command - using gunicorn
