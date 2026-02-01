@@ -58,6 +58,8 @@ download_status = {}
 download_status_lock = threading.Lock()
 active_downloads = set()  # Track which downloads are currently in progress
 active_downloads_lock = threading.Lock()
+download_counter = 0  # Monotonically increasing counter for unique download IDs
+download_counter_lock = threading.Lock()
 
 
 def safe_update_status(video_id, status_dict):
@@ -191,19 +193,22 @@ def download_video(url, download_type, quality_preset, video_id):
                 downloaded = d.get('downloaded_bytes', 0)
                 if total > 0:
                     progress = int((downloaded / total) * 100)
-                    print(f"[HOOK] {current_video_id}: Downloading {progress}%")
+                    if progress % 10 == 0 or progress > 95:  # Log every 10% or when near end
+                        print(f"[HOOK] {current_video_id}: Downloading {progress}% ({downloaded}/{total})")
                     safe_update_status(current_video_id, {
                         'status': 'downloading',
                         'progress': progress,
                         'message': f"{url} - Downloading: {progress}%",
                     })
             elif d['status'] == 'processing':
+                print(f"[HOOK] {current_video_id}: Processing")
                 safe_update_status(current_video_id, {
                     'status': 'processing',
                     'progress': 50,
                     'message': f"{url} - Post-processing...",
                 })
             elif d['status'] == 'finished':
+                print(f"[HOOK] {current_video_id}: Finished downloading, encoding...")
                 safe_update_status(current_video_id, {
                     'status': 'finished',
                     'progress': 100,
@@ -245,12 +250,12 @@ def download_video(url, download_type, quality_preset, video_id):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
-        print(f"[DEBUG] Download complete. Type={download_type}, Preset={quality_preset}")
+        print(f"[DOWNLOAD] {current_video_id}: yt-dlp download complete. Type={download_type}, Preset={quality_preset}")
         
         minivan_success = True
         # Post-process for minivan preset if needed (audio+video only)
         if download_type == 'audio+video' and quality_preset == 'minivan':
-            print(f"[DEBUG] Entering minivan re-encoding block")
+            print(f"[DOWNLOAD] {current_video_id}: Entering minivan re-encoding block")
             safe_update_status(current_video_id, {
                 'status': 'processing',
                 'progress': 75,
@@ -368,9 +373,13 @@ def download():
     
     download_ids = []
     for idx, url in enumerate(urls):
-        video_id = f"download_{len(download_status)}_{idx}"
+        with download_counter_lock:
+            global download_counter
+            video_id = f"download_{download_counter}"
+            download_counter += 1
+        
         download_ids.append(video_id)
-        download_status[video_id] = {'status': 'queued', 'progress': 0}
+        safe_update_status(video_id, {'status': 'queued', 'progress': 0})
         
         # Add to download queue instead of starting thread directly
         download_queue.put((url, download_type, quality_preset, video_id))
