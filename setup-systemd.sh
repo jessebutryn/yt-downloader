@@ -8,8 +8,8 @@ echo "=== YouTube Downloader Systemd Setup ==="
 
 # Configuration
 app_dir="/opt/yt-downloader"
-app_user="yt-downloader"
-app_group="yt-downloader"
+app_user="yt-dl"
+app_group="yt-dl"
 download_dir="/downloads"
 log_dir="/var/log/yt-downloader"
 config_dir="/etc/yt-downloader"
@@ -20,11 +20,11 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo "1. Creating yt-downloader user..."
+echo "1. Creating yt-dl user..."
 if id "$app_user" &>/dev/null; then
     echo "   User $app_user already exists"
 else
-    useradd -r -s /bin/bash -m -d /var/lib/yt-downloader "$app_user"
+    useradd -r -s /bin/bash -m -d /var/lib/yt-dl "$app_user"
     echo "   Created user $app_user"
 fi
 
@@ -43,17 +43,18 @@ chmod 755 "$log_dir"
 
 echo ""
 echo "3. Setting up Python virtual environment..."
-cd /home/jesse/git/yt-downloader
+app_user_home=$(eval echo "~$app_user")
+venv_dir="$app_user_home/venv"
 
-if [[ ! -d "venv" ]]; then
-    python3 -m venv venv
+if [[ ! -d "$venv_dir" ]]; then
+    sudo -u "$app_user" python3 -m venv "$venv_dir"
     echo "   Created virtual environment"
 fi
 
-source venv/bin/activate
+source "$venv_dir/bin/activate"
 echo "   Installing dependencies..."
 pip install --upgrade pip
-pip install -e .
+pip install -e /home/jesse/git/yt-downloader
 
 echo ""
 echo "4. Copying app to production location..."
