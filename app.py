@@ -62,6 +62,14 @@ QUALITY_PRESETS = {
 download_status = {}
 download_status_lock = threading.Lock()
 
+# Download counter for unique ID generation
+download_counter = 0
+download_counter_lock = threading.Lock()
+
+# Track active downloads
+active_downloads = set()
+active_downloads_lock = threading.Lock()
+
 
 def safe_update_status(video_id, status_dict):
     """Update download status to both file and memory"""
