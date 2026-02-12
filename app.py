@@ -186,10 +186,10 @@ def download_worker():
     """Worker thread that processes downloads from queue sequentially"""
     while True:
         try:
-            url, download_type, quality_preset, video_id = download_queue.get()
+            url, download_type, quality_preset, speed_limit_mbps, video_id = download_queue.get()
             # Clear any stale progress data before starting
             safe_update_status(video_id, {'status': 'queued', 'progress': 0})
-            download_video(url, download_type, quality_preset, video_id)
+            download_video(url, download_type, quality_preset, speed_limit_mbps, video_id)
             download_queue.task_done()
         except Exception as e:
             print(f"Worker error: {e}")
@@ -206,11 +206,41 @@ def start_download_worker():
         download_worker_thread.start()
 
 
-def download_video(url, download_type, quality_preset, video_id):
+def download_video(url, download_type, quality_preset, speed_limit_mbps, video_id):
     """Download video/audio in background"""
     try:
         # Create a local reference to video_id to ensure it's captured correctly in the closure
         current_video_id = video_id
+        
+        # Calculate rate limit in bytes/sec from MB/s (0 = unlimited)
+        # 1 MB/s = 1,048,576 bytes/second
+        if speed_limit_mbps == 0:
+            rate_limit_bytes = None  # Unlimited - don't set ratelimit
+        else:
+            rate_limit_bytes = speed_limit_mbps * 1024 * 1024
+        
+        # Extract video title and expected size for progress messages
+        video_title = "Unknown Video"
+        expected_size = 0
+        try:
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                video_title = info.get('title', 'Unknown Video')
+                # Get expected file size (may not be accurate for all formats)
+                expected_size = info.get('filesize') or info.get('filesize_approx', 0)
+        except Exception as e:
+            print(f"[INFO] Could not extract info for {url}: {e}")
+        
+        # Helper function for formatting file sizes
+        def format_size(bytes_val):
+            if bytes_val >= 1024 * 1024 * 1024:  # GB
+                return f"{bytes_val / (1024 * 1024 * 1024):.1f} GB"
+            elif bytes_val >= 1024 * 1024:  # MB
+                return f"{bytes_val / (1024 * 1024):.1f} MB"
+            elif bytes_val >= 1024:  # KB
+                return f"{bytes_val / 1024:.1f} KB"
+            else:  # B
+                return f"{bytes_val} B"
         
         # Mark this download as active
         with active_downloads_lock:
@@ -220,7 +250,9 @@ def download_video(url, download_type, quality_preset, video_id):
         safe_update_status(current_video_id, {
             'status': 'downloading',
             'progress': 0,
-            'message': f'Starting download: {url}',
+            'message': f'Starting download: {video_title}' + (f' ({format_size(expected_size)})' if expected_size > 0 else ''),
+            'expected_size': expected_size,
+            'video_title': video_title,
         })
         
         # Include quality preset in filename to avoid overwriting different qualities
@@ -238,34 +270,63 @@ def download_video(url, download_type, quality_preset, video_id):
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
                 downloaded = d.get('downloaded_bytes', 0)
+                speed = d.get('speed')  # Speed in bytes per second
+                if speed is None:
+                    speed = 0
+                
                 if total > 0:
                     progress = int((downloaded / total) * 100)
+                    
+                    # Format speed for display
+                    if speed > 0:
+                        if speed >= 1024 * 1024:  # Show in Mbps if >= 1 MB/s
+                            speed_display = f"{speed / (1024 * 1024):.1f} MB/s"
+                        elif speed >= 1024:  # Show in KB/s if >= 1 KB/s
+                            speed_display = f"{speed / 1024:.1f} KB/s"
+                        else:  # Show in B/s
+                            speed_display = f"{speed:.0f} B/s"
+                        speed_info = f" at {speed_display}"
+                    else:
+                        speed_info = ""
+                    
                     if progress % 10 == 0 or progress > 95:  # Log every 10% or when near end
                         print(f"[HOOK] {current_video_id}: Downloading {progress}% ({downloaded}/{total})")
+                    # Format size information
+                    def format_size(bytes_val):
+                        if bytes_val >= 1024 * 1024 * 1024:  # GB
+                            return f"{bytes_val / (1024 * 1024 * 1024):.1f} GB"
+                        elif bytes_val >= 1024 * 1024:  # MB
+                            return f"{bytes_val / (1024 * 1024):.1f} MB"
+                        elif bytes_val >= 1024:  # KB
+                            return f"{bytes_val / 1024:.1f} KB"
+                        else:  # B
+                            return f"{bytes_val} B"
+                    
+                    size_info = f" ({format_size(downloaded)}/{format_size(total)})"
+                    
                     safe_update_status(current_video_id, {
                         'status': 'downloading',
                         'progress': progress,
-                        'message': f"{url} - Downloading: {progress}%",
+                        'message': f"{video_title} - Downloading: {progress}%{speed_info}{size_info}",
                     })
             elif d['status'] == 'processing':
                 print(f"[HOOK] {current_video_id}: Processing")
                 safe_update_status(current_video_id, {
                     'status': 'processing',
                     'progress': 50,
-                    'message': f"{url} - Post-processing...",
+                    'message': f"{video_title} - Post-processing...",
                 })
             elif d['status'] == 'finished':
                 print(f"[HOOK] {current_video_id}: Finished downloading, encoding...")
                 safe_update_status(current_video_id, {
                     'status': 'finished',
                     'progress': 100,
-                    'message': f"{url} - Encoding...",
+                    'message': f"{video_title} - Encoding...",
                 })
         
         if download_type == 'audio':
             ydl_opts = {
                 'format': 'bestaudio/best',
-                'ratelimit': 2097152,  # 2 Mbps in bytes/sec
                 'progress_hooks': [progress_hook],
                 'outtmpl': output_template,
                 'quiet': False,
@@ -274,6 +335,8 @@ def download_video(url, download_type, quality_preset, video_id):
                 'remote_components': ['ejs:github'],
                 'restrictfilenames': True,  # Remove special characters from filenames
             }
+            if rate_limit_bytes is not None:
+                ydl_opts['ratelimit'] = rate_limit_bytes
             # Audio-only uses FFmpeg extraction
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
@@ -283,7 +346,6 @@ def download_video(url, download_type, quality_preset, video_id):
         else:  # audio+video
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'ratelimit': 2097152,  # 2 Mbps in bytes/sec
                 'progress_hooks': [progress_hook],
                 'outtmpl': output_template,
                 'quiet': False,
@@ -293,6 +355,8 @@ def download_video(url, download_type, quality_preset, video_id):
                 'remote_components': ['ejs:github'],
                 'restrictfilenames': True,  # Remove special characters from filenames
             }
+            if rate_limit_bytes is not None:
+                ydl_opts['ratelimit'] = rate_limit_bytes
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -306,7 +370,7 @@ def download_video(url, download_type, quality_preset, video_id):
             safe_update_status(current_video_id, {
                 'status': 'processing',
                 'progress': 75,
-                'message': f'{url} - Re-encoding for Minivan...'
+                'message': f'{video_title} - Re-encoding for Minivan...'
             })
             
             try:
@@ -322,7 +386,22 @@ def download_video(url, download_type, quality_preset, video_id):
                     print(f"[Minivan] Selected file: {latest_file}")
                     temp_file = latest_file + '.temp.mp4'
                     
-                    # Run ffmpeg re-encoding
+                    # First, get the duration of the input file using ffprobe
+                    probe_cmd = [
+                        'ffprobe', '-v', 'quiet', '-print_format', 'json', 
+                        '-show_format', '-show_streams', latest_file
+                    ]
+                    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    if probe_result.returncode != 0:
+                        print(f"[Minivan] ffprobe error: {probe_result.stderr}")
+                        raise Exception("Failed to probe video duration")
+                    
+                    import json as json_lib
+                    probe_data = json_lib.loads(probe_result.stdout)
+                    duration = float(probe_data['format']['duration'])
+                    print(f"[Minivan] Input duration: {duration} seconds")
+                    
+                    # Run ffmpeg re-encoding with real-time progress monitoring
                     print(f"[Minivan] Starting re-encode...")
                     cmd = [
                         'ffmpeg', '-i', latest_file,
@@ -334,12 +413,51 @@ def download_video(url, download_type, quality_preset, video_id):
                         '-y', temp_file
                     ]
                     print(f"[Minivan] Running FFmpeg command...")
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode != 0:
+                    
+                    # Use Popen to monitor progress in real-time
+                    process = subprocess.Popen(
+                        cmd, 
+                        stderr=subprocess.PIPE, 
+                        stdout=subprocess.PIPE, 
+                        text=True,
+                        bufsize=1,
+                        universal_newlines=True
+                    )
+                    
+                    # Monitor FFmpeg progress from stderr
+                    import re
+                    time_pattern = re.compile(r'time=(\d+):(\d+):(\d+\.\d+)')
+                    
+                    while True:
+                        line = process.stderr.readline()
+                        if not line and process.poll() is not None:
+                            break
+                        
+                        # Parse time from FFmpeg output
+                        match = time_pattern.search(line)
+                        if match:
+                            hours, minutes, seconds = map(float, match.groups())
+                            current_time = hours * 3600 + minutes * 60 + seconds
+                            
+                            # Calculate progress from 75% to 99% based on encoding progress
+                            if duration > 0:
+                                encoding_progress = min(current_time / duration, 1.0)
+                                overall_progress = 75 + (encoding_progress * 24)  # 75% to 99%
+                                
+                                safe_update_status(current_video_id, {
+                                    'status': 'processing',
+                                    'progress': int(overall_progress),
+                                    'message': f'{video_title} - Re-encoding for Minivan: {int(encoding_progress * 100)}%'
+                                })
+                    
+                    # Check if FFmpeg succeeded
+                    if process.returncode != 0:
+                        stdout, stderr = process.communicate()
                         print(f"[Minivan] FFmpeg error:")
-                        print(f"FFmpeg stderr: {result.stderr}")
-                        print(f"FFmpeg stdout: {result.stdout}")
-                        result.check_returncode()  # Raise exception
+                        print(f"FFmpeg stderr: {stderr}")
+                        print(f"FFmpeg stdout: {stdout}")
+                        raise Exception("FFmpeg re-encoding failed")
+                    
                     print(f"[Minivan] FFmpeg complete, replacing original file...")
                     os.replace(temp_file, latest_file)
                     print(f"[Minivan] Re-encoding complete: {latest_file}")
@@ -362,7 +480,7 @@ def download_video(url, download_type, quality_preset, video_id):
         safe_update_status(current_video_id, {
             'status': 'completed',
             'progress': 100,
-            'message': f'{url} - Complete!'
+            'message': f'{video_title} - Complete!'
         })
     except Exception as e:
         with active_downloads_lock:
@@ -372,7 +490,7 @@ def download_video(url, download_type, quality_preset, video_id):
             'status': 'error',
             'progress': 0,
             'error': str(e),
-            'message': f'{url} - Error: {str(e)}'
+            'message': f'{video_title} - Error: {str(e)}'
         })
 
 
@@ -409,8 +527,9 @@ def download():
     """Start download in background (queued)"""
     data = request.json
     urls = data.get('urls', [])
-    download_type = data.get('type', 'audio')  # audio, audio+video
+    download_type = data.get('type', 'audio+video')  # audio, audio+video
     quality_preset = data.get('quality', 'best')
+    speed_limit_mbps = data.get('speed', 5)  # Default to 5 Mbps if not specified
     
     if not urls:
         return jsonify({'error': 'No URLs provided'}), 400
@@ -429,7 +548,7 @@ def download():
         safe_update_status(video_id, {'status': 'queued', 'progress': 0})
         
         # Add to download queue instead of starting thread directly
-        download_queue.put((url, download_type, quality_preset, video_id))
+        download_queue.put((url, download_type, quality_preset, speed_limit_mbps, video_id))
     
     return jsonify({'download_ids': download_ids})
 

@@ -202,6 +202,19 @@
             background: #0066cc;
         }
 
+        .file-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .delete-link {
+            background: #dc3545 !important;
+        }
+
+        .delete-link:hover {
+            background: #c82333 !important;
+        }
+
         .status-message {
             padding: 15px;
             border-radius: 5px;
@@ -297,11 +310,11 @@
                     <label>Download Type:</label>
                     <div class="radio-group">
                         <div class="radio-option">
-                            <input type="radio" id="audioOnly" name="downloadType" value="audio" checked>
+                            <input type="radio" id="audioOnly" name="downloadType" value="audio">
                             <label for="audioOnly">Audio Only</label>
                         </div>
                         <div class="radio-option">
-                            <input type="radio" id="audioVideo" name="downloadType" value="audio+video">
+                            <input type="radio" id="audioVideo" name="downloadType" value="audio+video" checked>
                             <label for="audioVideo">Audio + Video</label>
                         </div>
                     </div>
@@ -311,6 +324,20 @@
                     <label for="qualityPreset">Quality Preset:</label>
                     <select id="qualityPreset">
                         <option value="best">Best Available</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="downloadSpeed">Download Speed Limit (Mbps):</label>
+                    <select id="downloadSpeed">
+                        <option value="1">1 Mbps</option>
+                        <option value="2">2 Mbps</option>
+                        <option value="5" selected>5 Mbps</option>
+                        <option value="10">10 Mbps</option>
+                        <option value="25">25 Mbps</option>
+                        <option value="50">50 Mbps</option>
+                        <option value="100">100 Mbps</option>
+                        <option value="0">Unlimited</option>
                     </select>
                 </div>
 
@@ -327,7 +354,7 @@
         </div>
 
         <div class="card download-list">
-            <h2>Downloaded Files</h2>
+            <h2>Downloaded Files <span id="lastUpdated" style="font-size: 0.8em; font-weight: normal; color: #666;"></span></h2>
             <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; width: 100%;">
                 <button type="button" class="btn-secondary" onclick="selectAllFiles()">Select All</button>
                 <button type="button" class="btn-secondary" onclick="clearSelection()">Clear Selection</button>
@@ -379,6 +406,7 @@
 
             const downloadType = document.querySelector('input[name="downloadType"]:checked').value;
             const quality = document.getElementById('qualityPreset').value;
+            const speed = parseInt(document.getElementById('downloadSpeed').value);
 
             const submitBtn = document.querySelector('button[type="submit"]');
             submitBtn.disabled = true;
@@ -393,7 +421,8 @@
                     body: JSON.stringify({
                         urls,
                         type: downloadType,
-                        quality: quality
+                        quality: quality,
+                        speed: speed
                     })
                 });
 
@@ -436,12 +465,9 @@
         });
 
         async function pollDownloadStatus(downloadIds) {
-            let checkCount = 0;
-            const maxChecks = 600; // Stop after 10 minutes (600 * 1 second)
-            
             const pollInterval = setInterval(async () => {
-                checkCount++;
                 let completed = 0;
+                let hasActiveDownloads = false;
                 
                 for (const id of downloadIds) {
                     try {
@@ -472,24 +498,22 @@
                             `;
                         }
                         
-                        // Count as completed if finished or error
+                        // Check if download is in a terminal state
                         if (status.status === 'completed' || status.status === 'error') {
                             completed++;
+                        } else if (status.status === 'queued' || status.status === 'downloading' || status.status === 'processing') {
+                            // Still actively processing
+                            hasActiveDownloads = true;
                         }
                     } catch (error) {
                         console.error('Error checking download status:', error);
                     }
                 }
                 
-                // Stop if all downloads are done or timeout reached
-                if (completed === downloadIds.length) {
+                // Stop polling only when ALL downloads have reached terminal states
+                // (no more queued, downloading, or processing downloads)
+                if (completed === downloadIds.length && !hasActiveDownloads) {
                     clearInterval(pollInterval);
-                    setTimeout(() => {
-                        loadDownloads();
-                    }, 1000);
-                } else if (checkCount >= maxChecks) {
-                    clearInterval(pollInterval);
-                    showStatus('Download polling timeout - some downloads may still be processing', 'info');
                     setTimeout(() => {
                         loadDownloads();
                     }, 1000);
@@ -501,6 +525,11 @@
             try {
                 const response = await fetch('/api/downloads');
                 const files = await response.json();
+                
+                // Update last updated timestamp
+                const now = new Date();
+                const timeString = now.toLocaleTimeString();
+                document.getElementById('lastUpdated').textContent = `(last updated: ${timeString})`;
 
                 const filesList = document.getElementById('filesList');
                 
@@ -518,11 +547,35 @@
                                 <div class="download-size">${formatFileSize(file.size)}</div>
                             </div>
                         </div>
-                        <a href="#" onclick="downloadSingleFile('${file.name}'); return false;" class="download-link">Download & Delete</a>
+                        <div class="file-actions">
+                            <a href="#" onclick="downloadFile('${file.name}'); return false;" class="download-link save-link">Save</a>
+                            <a href="#" onclick="deleteFile('${file.name}'); return false;" class="download-link delete-link">Delete</a>
+                        </div>
                     </div>
                 `).join('');
             } catch (error) {
                 console.error('Error loading downloads:', error);
+            }
+        }
+
+        // Auto-refresh downloads list
+        let downloadsRefreshInterval = null;
+
+        function startDownloadsAutoRefresh() {
+            // Clear any existing interval
+            if (downloadsRefreshInterval) {
+                clearInterval(downloadsRefreshInterval);
+            }
+            // Refresh every 30 seconds
+            downloadsRefreshInterval = setInterval(() => {
+                loadDownloads();
+            }, 5000);
+        }
+
+        function stopDownloadsAutoRefresh() {
+            if (downloadsRefreshInterval) {
+                clearInterval(downloadsRefreshInterval);
+                downloadsRefreshInterval = null;
             }
         }
 
@@ -532,6 +585,42 @@
 
         function clearSelection() {
             document.querySelectorAll('.file-checkbox').forEach(cb => cb.checked = false);
+        }
+
+        async function downloadFile(filename) {
+            try {
+                // Create a temporary download link
+                const link = document.createElement('a');
+                link.href = `/download/${encodeURIComponent(filename)}`;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } catch (error) {
+                showStatus('Error downloading file: ' + error.message, 'error');
+            }
+        }
+
+        async function deleteFile(filename) {
+            if (!confirm(`Are you sure you want to delete "${filename}"? This cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/downloads/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    showStatus(`File "${filename}" deleted successfully`, 'success');
+                    loadDownloads();
+                } else {
+                    const error = await response.json();
+                    showStatus('Error deleting file: ' + (error.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                showStatus('Error deleting file: ' + error.message, 'error');
+            }
         }
 
         async function downloadSingleFile(filename) {
@@ -569,7 +658,7 @@
             }
 
             for (const filename of selected) {
-                await downloadSingleFile(filename);
+                await downloadFile(filename);
             }
         }
 
@@ -619,6 +708,7 @@
         // Load downloads on page load
         loadQualityPresets();
         loadDownloads();
+        startDownloadsAutoRefresh();
     </script>
 </body>
 </html>
