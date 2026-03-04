@@ -14,6 +14,11 @@ app = Flask(__name__)
 DOWNLOAD_DIR = Path("/downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+# GPU support (optional). Set APP_USE_GPU=1 to enable NVENC/CUDA paths if ffmpeg supports them.
+GPU_ENABLED = os.environ.get('APP_USE_GPU', '0').lower() in ('1', 'true', 'yes')
+# GPU device index for nvenc selection (string/int). Default 0.
+GPU_DEVICE = os.environ.get('APP_GPU_DEVICE', '0')
+
 # Status directory for tracking long-running jobs
 STATUS_DIR = Path("/downloads/.status")
 STATUS_DIR.mkdir(exist_ok=True)
@@ -32,8 +37,12 @@ QUALITY_PRESETS = {
             'height': 720,
             'video_codec': 'libx264',
             'audio_codec': 'aac',
-            'video_bitrate': '706k',
-            'audio_bitrate': '192k'
+            'video_bitrate': '1200k',
+            'framerate': 30,
+            'crf': 23,
+            # NVENC constant quality target (higher = smaller file)
+            'nvenc_cq': 26,
+            'audio_bitrate': '128k'
         }
     },
     '1080p': {
@@ -223,7 +232,7 @@ def download_video(url, download_type, quality_preset, speed_limit_mbps, video_i
         video_title = "Unknown Video"
         expected_size = 0
         try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'js_runtimes': {'node': {}}}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 video_title = info.get('title', 'Unknown Video')
                 # Get expected file size (may not be accurate for all formats)
@@ -266,6 +275,15 @@ def download_video(url, download_type, quality_preset, speed_limit_mbps, video_i
                     print(f"[HOOK] {current_video_id} not in active_downloads, ignoring callback")
                     return
                 
+            # If info extraction failed, try to recover the title from the filename
+            nonlocal video_title
+            if video_title == 'Unknown Video' and d.get('filename'):
+                name = Path(d['filename']).stem
+                # Strip trailing _preset suffix added by outtmpl
+                if name.endswith(f'_{quality_preset}'):
+                    name = name[:-(len(quality_preset) + 1)]
+                video_title = name.replace('_', ' ')
+
             # Use current_video_id from the enclosing scope to ensure correct tracking
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
@@ -331,7 +349,7 @@ def download_video(url, download_type, quality_preset, speed_limit_mbps, video_i
                 'outtmpl': output_template,
                 'quiet': False,
                 'socket_timeout': 30,
-                'js_runtimes': {'node': {'path': '/usr/local/bin/node'}},
+                'js_runtimes': {'node': {}},
                 'remote_components': ['ejs:github'],
                 'restrictfilenames': True,  # Remove special characters from filenames
             }
@@ -344,20 +362,32 @@ def download_video(url, download_type, quality_preset, speed_limit_mbps, video_i
                 'preferredquality': '192',
             }]
         else:  # audio+video
+            # For minivan, prefer H.264/H.265 source to enable full GPU decode+encode pipeline.
+            # AV1 has no hardware decoder on most cards and forces slow CPU decode.
+            if quality_preset == 'minivan':
+                video_format = (
+                    'bestvideo[vcodec^=avc][height<=720]+bestaudio[ext=m4a]'
+                    '/bestvideo[vcodec^=hev][height<=720]+bestaudio[ext=m4a]'
+                    '/bestvideo[vcodec^=h264][height<=720]+bestaudio[ext=m4a]'
+                    '/bestvideo[height<=720]+bestaudio[ext=m4a]'
+                    '/best[height<=720]/best'
+                )
+            else:
+                video_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'format': video_format,
                 'progress_hooks': [progress_hook],
                 'outtmpl': output_template,
                 'quiet': False,
                 'socket_timeout': 30,
                 'merge_output_format': 'mp4',
-                'js_runtimes': {'node': {'path': '/usr/local/bin/node'}},
+                'js_runtimes': {'node': {}},
                 'remote_components': ['ejs:github'],
                 'restrictfilenames': True,  # Remove special characters from filenames
             }
             if rate_limit_bytes is not None:
                 ydl_opts['ratelimit'] = rate_limit_bytes
-        
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         
@@ -400,67 +430,157 @@ def download_video(url, download_type, quality_preset, speed_limit_mbps, video_i
                     probe_data = json_lib.loads(probe_result.stdout)
                     duration = float(probe_data['format']['duration'])
                     print(f"[Minivan] Input duration: {duration} seconds")
-                    
-                    # Run ffmpeg re-encoding with real-time progress monitoring
-                    print(f"[Minivan] Starting re-encode...")
-                    cmd = [
-                        'ffmpeg', '-i', latest_file,
-                        '-vf', 'scale=1280:720:force_original_aspect_ratio=1',
-                        '-c:v', 'libx264',
-                        '-b:v', '706k',
-                        '-c:a', 'aac',
-                        '-b:a', '192k',
-                        '-y', temp_file
-                    ]
-                    print(f"[Minivan] Running FFmpeg command...")
-                    
-                    # Use Popen to monitor progress in real-time
-                    process = subprocess.Popen(
-                        cmd, 
-                        stderr=subprocess.PIPE, 
-                        stdout=subprocess.PIPE, 
-                        text=True,
-                        bufsize=1,
-                        universal_newlines=True
-                    )
-                    
-                    # Monitor FFmpeg progress from stderr
-                    import re
-                    time_pattern = re.compile(r'time=(\d+):(\d+):(\d+\.\d+)')
-                    
-                    while True:
-                        line = process.stderr.readline()
-                        if not line and process.poll() is not None:
-                            break
-                        
-                        # Parse time from FFmpeg output
-                        match = time_pattern.search(line)
-                        if match:
-                            hours, minutes, seconds = map(float, match.groups())
-                            current_time = hours * 3600 + minutes * 60 + seconds
-                            
-                            # Calculate progress from 75% to 99% based on encoding progress
-                            if duration > 0:
-                                encoding_progress = min(current_time / duration, 1.0)
-                                overall_progress = 75 + (encoding_progress * 24)  # 75% to 99%
-                                
-                                safe_update_status(current_video_id, {
-                                    'status': 'processing',
-                                    'progress': int(overall_progress),
-                                    'message': f'{video_title} - Re-encoding for Minivan: {int(encoding_progress * 100)}%'
-                                })
-                    
-                    # Check if FFmpeg succeeded
-                    if process.returncode != 0:
-                        stdout, stderr = process.communicate()
-                        print(f"[Minivan] FFmpeg error:")
-                        print(f"FFmpeg stderr: {stderr}")
-                        print(f"FFmpeg stdout: {stdout}")
-                        raise Exception("FFmpeg re-encoding failed")
-                    
-                    print(f"[Minivan] FFmpeg complete, replacing original file...")
-                    os.replace(temp_file, latest_file)
-                    print(f"[Minivan] Re-encoding complete: {latest_file}")
+
+                    # Skip re-encoding if source is already H.264 at target resolution
+                    video_stream = next((s for s in probe_data.get('streams', []) if s.get('codec_type') == 'video'), None)
+                    src_codec = video_stream.get('codec_name', '').lower() if video_stream else ''
+                    src_height = int(video_stream.get('height', 9999)) if video_stream else 9999
+                    if src_codec == 'h264' and src_height <= 720:
+                        print(f"[Minivan] Source is already H.264 {src_height}p — skipping re-encode")
+                    else:
+                        # Gather post-processing args from preset
+                        post_args = QUALITY_PRESETS.get(quality_preset, {}).get('post_args', {})
+                        target_fps = post_args.get('framerate', 30)
+                        target_bitrate = post_args.get('video_bitrate', '1200k')
+
+                        # Prepare CPU encode command (used as fallback)
+                        crf = post_args.get('crf', 23)
+                        cpu_cmd = [
+                            'ffmpeg', '-i', latest_file,
+                            '-vf', 'scale=1280:720:force_original_aspect_ratio=1',
+                            '-c:v', 'libx264',
+                            '-crf', str(crf),
+                            '-preset', 'medium',
+                            '-b:v', target_bitrate,
+                            '-r', str(target_fps),
+                            '-c:a', 'aac',
+                            '-b:a', post_args.get('audio_bitrate', '128k'),
+                            '-y', temp_file
+                        ]
+
+                        if GPU_ENABLED:
+                            # Only use hwaccel for codecs the GPU can decode
+                            HWACCEL_DECODABLE = {'h264', 'hevc', 'mpeg2video', 'vc1', 'mpeg4'}
+                            use_hwaccel = src_codec in HWACCEL_DECODABLE
+                            if use_hwaccel:
+                                hwaccel_args = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda']
+                                vf_filter = 'scale_npp=1280:720:format=yuv420p'
+                            else:
+                                hwaccel_args = []
+                                vf_filter = 'scale=1280:720:force_original_aspect_ratio=1'
+                                if src_codec:
+                                    print(f"[Minivan] Skipping hwaccel for input codec '{src_codec}' (not hw-decodable)")
+
+                            cmd = [
+                                'ffmpeg',
+                                *hwaccel_args,
+                                '-threads', '2',
+                                '-i', latest_file,
+                                '-vf', vf_filter,
+                                '-c:v', 'h264_nvenc',
+                                '-preset', 'p4',
+                                '-rc', 'vbr',
+                                '-cq', str(post_args.get('nvenc_cq', 26)),
+                                '-b:v', target_bitrate,
+                                '-maxrate', target_bitrate,
+                                '-gpu', str(GPU_DEVICE),
+                                '-r', str(target_fps),
+                                '-c:a', 'aac',
+                                '-b:a', post_args.get('audio_bitrate', '128k'),
+                                '-filter_threads', '1',
+                                '-y', temp_file
+                            ]
+                        else:
+                            cmd = cpu_cmd
+
+                        print(f"[Minivan] Running FFmpeg command: {' '.join(cmd)}")
+
+                        process = subprocess.Popen(
+                            cmd,
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            text=True,
+                            bufsize=1,
+                            universal_newlines=True
+                        )
+
+                        import re
+                        time_pattern = re.compile(r'time=(\d+):(\d+):(\d+\.\d+)')
+                        stderr_lines = []
+
+                        while True:
+                            line = process.stderr.readline()
+                            if not line and process.poll() is not None:
+                                break
+                            if line:
+                                stderr_lines.append(line)
+                            match = time_pattern.search(line)
+                            if match:
+                                hours, minutes, seconds = map(float, match.groups())
+                                current_time = hours * 3600 + minutes * 60 + seconds
+                                if duration > 0:
+                                    encoding_progress = min(current_time / duration, 1.0)
+                                    overall_progress = 75 + (encoding_progress * 24)
+                                    safe_update_status(current_video_id, {
+                                        'status': 'processing',
+                                        'progress': int(overall_progress),
+                                        'message': f'{video_title} - Re-encoding for Minivan: {int(encoding_progress * 100)}%'
+                                    })
+
+                        process.wait()
+                        stderr = ''.join(stderr_lines)
+
+                        if process.returncode == 0:
+                            try:
+                                probe = subprocess.run([
+                                    'ffprobe', '-v', 'error',
+                                    '-select_streams', 'v',
+                                    '-show_entries', 'stream=codec_type',
+                                    '-of', 'default=nw=1:nk=1',
+                                    temp_file
+                                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+                                if not probe.stdout.strip():
+                                    print(f"[Minivan] Warning: output has no video stream, triggering CPU fallback.")
+                                    process.returncode = 1
+                                    stderr = probe.stderr
+                            except Exception as e:
+                                print(f"[Minivan] ffprobe check failed: {e}")
+                                process.returncode = 1
+
+                        if process.returncode != 0:
+                            print(f"[Minivan] FFmpeg error (rc={process.returncode}):")
+                            print(f"Command: {' '.join(cmd)}")
+                            print(f"FFmpeg stderr: {stderr}")
+                            if GPU_ENABLED:
+                                print("[Minivan] GPU encode failed, retrying with CPU libx264...")
+                                try:
+                                    fallback_proc = subprocess.Popen(
+                                        cpu_cmd,
+                                        stderr=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        text=True,
+                                        bufsize=1,
+                                        universal_newlines=True
+                                    )
+                                    while True:
+                                        line = fallback_proc.stderr.readline()
+                                        if not line and fallback_proc.poll() is not None:
+                                            break
+                                    fallback_proc.wait()
+                                    if fallback_proc.returncode != 0:
+                                        _, fo_stderr = fallback_proc.communicate()
+                                        print(f"[Minivan] CPU fallback failed (rc={fallback_proc.returncode}): {fo_stderr}")
+                                        raise Exception("FFmpeg re-encoding failed (GPU and CPU)")
+                                    print("[Minivan] CPU fallback succeeded")
+                                except Exception as e:
+                                    print(f"[Minivan] CPU fallback exception: {e}")
+                                    raise
+                            else:
+                                raise Exception("FFmpeg re-encoding failed")
+
+                        print(f"[Minivan] FFmpeg complete, replacing original file...")
+                        os.replace(temp_file, latest_file)
+                        print(f"[Minivan] Re-encoding complete: {latest_file}")
                 else:
                     print(f"[Minivan] No files found! Checked pattern: {pattern}")
                     minivan_success = False

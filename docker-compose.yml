@@ -10,4 +10,15 @@ services:
       - ./downloads:/downloads
     environment:
       - FLASK_ENV=${APP_ENV:-development}
+      - APP_USE_GPU=${APP_USE_GPU:-0}
+      - APP_GPU_DEVICE=${APP_GPU_DEVICE:-0}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,video,utility}
+    # Note: some older `docker-compose` (python `docker-compose`) versions
+    # don't support the `gpus` key and will error. To enable GPUs there are two
+    # options: use the newer Docker Compose plugin (`docker compose`) which
+    # supports `gpus: all`, or start the container with `--gpus` via
+    # `docker run`. For compatibility, `gpus` is not set here by default.
+    cap_add:
+      - NET_BIND_SERVICE
     restart: unless-stopped

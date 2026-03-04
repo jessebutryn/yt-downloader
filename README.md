@@ -76,6 +76,23 @@ You can customize the following in `docker-compose.yml`:
 - `FLASK_ENV`: Set to `production` for production deployments
 - Port mapping: Change `5000:5000` to use a different port (e.g., `8080:5000`)
 
+### GPU / NVIDIA (optional)
+
+The app can use NVIDIA hardware acceleration (NVENC) for ffmpeg re-encoding when running inside a container with GPU access.
+
+- Install the NVIDIA Container Toolkit on the host so Docker can expose GPUs to containers: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+- Enable GPU usage by setting `APP_USE_GPU=1` and running the compose stack (the included Dockerfile uses an NVENC-enabled ffmpeg base):
+
+```bash
+APP_USE_GPU=1 docker compose up --build
+```
+
+- You can also control which GPU is used with `APP_GPU_DEVICE` or `NVIDIA_VISIBLE_DEVICES` environment variables in `docker-compose.yml`.
+
+- Note: the container image must include an ffmpeg build with NVENC support. The provided `Dockerfile` uses `jrottenberg/ffmpeg:6.0-nvidia` as a base which includes NVENC-enabled ffmpeg.
+
+- If you see errors like "Unknown encoder 'h264_nvenc'" or missing filters (`scale_cuda`), your ffmpeg build doesn't support NVENC — either use a different base image or install an ffmpeg build with NVIDIA support.
+
 ### Volume Mapping
 
 By default, downloaded files are stored in `./downloads` on your host machine. You can change this in `docker-compose.yml`:
