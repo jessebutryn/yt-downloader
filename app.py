@@ -232,7 +232,7 @@ def download_video(url, download_type, quality_preset, speed_limit_mbps, video_i
         video_title = "Unknown Video"
         expected_size = 0
         try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'js_runtimes': {'node': {}}}) as ydl:
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'js_runtimes': {'node': {}}, 'remote_components': ['ejs:github']}) as ydl:
                 info = ydl.extract_info(url, download=False)
                 video_title = info.get('title', 'Unknown Video')
                 # Get expected file size (may not be accurate for all formats)

@@ -1,0 +1,8 @@
+version: '3.8'
+
+services:
+  yt-downloader:
+    # This override enables GPUs when using the Docker Compose plugin
+    # Usage: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build`
+    deploy: {}
+    gpus: all
