@@ -12,9 +12,9 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.11",
+    python_requires=">=3.8",
     install_requires=[
         "Flask==3.0.0",
-        "yt-dlp>=2026.1.31",
+        "yt-dlp",
     ],
 )
